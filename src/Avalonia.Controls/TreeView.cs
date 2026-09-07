@@ -52,6 +52,10 @@ namespace Avalonia.Controls
         private object? _selectedItem;
         private IList? _selectedItems;
         private bool _syncingSelectedItems;
+        private readonly List<object> _previousSelectedItems = new();
+        private bool _batchingSelectionChanges;
+        private List<object>? _pendingAdded;
+        private List<object>? _pendingRemoved;
 
         /// <summary>
         /// Initializes static members of the <see cref="TreeView"/> class.
@@ -221,7 +225,19 @@ namespace Avalonia.Controls
             }
 
             AddItems(this);
-            SynchronizeItems(SelectedItems, allItems);
+
+            _batchingSelectionChanges = true;
+
+            try
+            {
+                SynchronizeItems(SelectedItems, allItems);
+            }
+            finally
+            {
+                _batchingSelectionChanges = false;
+            }
+
+            RaisePendingSelectionChanged();
         }
 
         /// <summary>
@@ -330,10 +346,22 @@ namespace Avalonia.Controls
         {
             var oldValue = _selectedItem;
             _syncingSelectedItems = true;
-            SelectedItems.Clear();
-            _selectedItem = item;
-            SelectedItems.Add(item);
-            _syncingSelectedItems = false;
+            _batchingSelectionChanges = true;
+
+            try
+            {
+                // Clearing and repopulating the collection is one selection change, not two.
+                SelectedItems.Clear();
+                _selectedItem = item;
+                SelectedItems.Add(item);
+            }
+            finally
+            {
+                _syncingSelectedItems = false;
+                _batchingSelectionChanges = false;
+            }
+
+            RaisePendingSelectionChanged();
 
             RaisePropertyChanged(SelectedItemProperty, oldValue, _selectedItem);    
         }
@@ -405,6 +433,18 @@ namespace Avalonia.Controls
                         MarkContainerSelected(container, false);
                     }
 
+                    // A reset carries no OldItems, so work out what was deselected by comparing
+                    // against the previous selection.
+                    if (_previousSelectedItems.Count > 0)
+                    {
+                        var deselected = _previousSelectedItems.Where(x => !SelectedItems.Contains(x)).ToArray();
+
+                        if (deselected.Length > 0)
+                        {
+                            removed = deselected;
+                        }
+                    }
+
                     if (SelectedItems.Count > 0)
                     {
                         SelectedItemsAdded(SelectedItems);
@@ -445,11 +485,74 @@ namespace Avalonia.Controls
 
             if (added?.Count > 0 || removed?.Count > 0)
             {
-                var changed = new SelectionChangedEventArgs(
+                if (_batchingSelectionChanges)
+                {
+                    Accumulate(ref _pendingRemoved, removed);
+                    Accumulate(ref _pendingAdded, added);
+                }
+                else
+                {
+                    var changed = new SelectionChangedEventArgs(
+                        SelectingItemsControl.SelectionChangedEvent,
+                        removed ?? Empty,
+                        added ?? Empty);
+                    RaiseEvent(changed);
+                }
+            }
+
+            _previousSelectedItems.Clear();
+
+            foreach (object? item in SelectedItems)
+            {
+                if (item is not null)
+                {
+                    _previousSelectedItems.Add(item);
+                }
+            }
+        }
+
+        private static void Accumulate(ref List<object>? target, IList? items)
+        {
+            if (items is null || items.Count == 0)
+            {
+                return;
+            }
+
+            target ??= new List<object>();
+
+            foreach (object? item in items)
+            {
+                if (item is not null)
+                {
+                    target.Add(item);
+                }
+            }
+        }
+
+        private void RaisePendingSelectionChanged()
+        {
+            var added = _pendingAdded;
+            var removed = _pendingRemoved;
+
+            _pendingAdded = null;
+            _pendingRemoved = null;
+
+            // An item that was deselected and reselected hasn't changed.
+            if (added is not null && removed is not null)
+            {
+                foreach (var item in removed.Intersect(added).ToArray())
+                {
+                    added.Remove(item);
+                    removed.Remove(item);
+                }
+            }
+
+            if (added?.Count > 0 || removed?.Count > 0)
+            {
+                RaiseEvent(new SelectionChangedEventArgs(
                     SelectingItemsControl.SelectionChangedEvent,
-                    removed ?? Empty,
-                    added ?? Empty);
-                RaiseEvent(changed);
+                    (IList?)removed ?? Empty,
+                    (IList?)added ?? Empty));
             }
         }
 
