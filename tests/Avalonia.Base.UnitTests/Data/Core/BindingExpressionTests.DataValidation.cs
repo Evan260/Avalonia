@@ -2,8 +2,10 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using System.Linq;
 using Avalonia.Data;
+using Avalonia.Data.Converters;
 using Avalonia.Data.Core.Plugins;
 using Avalonia.UnitTests;
 using Xunit;
@@ -575,6 +577,53 @@ public partial class BindingExpressionTests
             return Array.Empty<string>();
         }
     }   
+
+    private class InvalidIdConverter : IValueConverter
+    {
+        public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+            => value;
+
+        public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        {
+            if (value is int i)
+                return i;
+
+            if (value is string s && int.TryParse(s, out var parsed))
+                return parsed;
+
+            return new BindingNotification(
+                new FormatException($"'{value}' is not a valid ID."),
+                BindingErrorType.DataValidationError);
+        }
+    }
+
+    [Fact]
+    public void ConvertBack_DataValidationError_Updates_Data_Validation()
+    {
+        var data = new ViewModel { IntValue = 1 };
+        var target = CreateTargetWithSource(
+            data,
+            o => o.IntValue,
+            converter: new InvalidIdConverter(),
+            enableDataValidation: true,
+            mode: BindingMode.TwoWay,
+            targetProperty: TargetClass.TagProperty);
+
+        target.Tag = "42";
+
+        AssertNoError(target, TargetClass.TagProperty);
+
+        target.Tag = "0x555g";
+
+        Assert.Equal(42, data.IntValue);
+        AssertBindingError(
+            target,
+            TargetClass.TagProperty,
+            new FormatException("'0x555g' is not a valid ID."),
+            BindingErrorType.DataValidationError);
+
+        GC.KeepAlive(data);
+    }
 
     private static void AssertNoError(TargetClass target, AvaloniaProperty property)
     {

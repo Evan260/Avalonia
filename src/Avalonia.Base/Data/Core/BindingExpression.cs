@@ -326,6 +326,16 @@ internal class BindingExpression : UntypedBindingExpressionBase, IDescription, I
         if (value == BindingOperations.DoNothing)
             return true;
 
+        // A converter can report a validation failure by returning a notification instead of a
+        // value. Publish the original error rather than letting the notification itself fall
+        // through to the target type converter.
+        if (value is BindingNotification { ErrorType: BindingErrorType.DataValidationError } notification)
+        {
+            if (IsDataValidationEnabled && notification.Error is { } error)
+                OnDataValidationError(error);
+            return false;
+        }
+
         // Use the target type converter to convert the value to the target type if necessary.
         if (_targetTypeConverter is not null)
         {
